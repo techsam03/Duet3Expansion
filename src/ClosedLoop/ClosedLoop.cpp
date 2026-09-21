@@ -168,6 +168,9 @@ void ClosedLoop::InitInstance() noexcept
 	errorThresholds[1] = DefaultClosedLoopPositionErrorThreshold;
 
 	PIDITerm = 0.0;
+	integralError = 0.0;
+	moveStandstillTransition.Reset();
+	frictionFeedforward.Reset();
 	errorDerivativeFilter.Reset();
 	speedFilter.Reset();
 
@@ -186,6 +189,9 @@ GCodeResult ClosedLoop::ProcessM569Point1(CanMessageGenericParser& parser, const
 	float tempKp = Kp;
 	float tempKi = Ki;
 	float tempKd = Kd;
+	float tempKiStandstill = KiStandstill;
+	float tempKdStandstill = KdStandstill;
+	float tempKf = Kf;
 	float tempKv = Kv;
 	float tempKa = Ka;
 	uint16_t tempStepsPerRev = 200;
@@ -197,8 +203,14 @@ GCodeResult ClosedLoop::ProcessM569Point1(CanMessageGenericParser& parser, const
 	// Pull changed parameters
 	const bool seenT = parser.GetUintParam('T', tempEncoderType);
 	const bool seenC = parser.GetFloatParam('C', tempCPR);
-	const bool seenPid = parser.GetFloatParam('R', tempKp) | parser.GetFloatParam('I', tempKi)  | parser.GetFloatParam('D', tempKd)
-						| parser.GetFloatParam('V', tempKv) | parser.GetFloatParam('A', tempKa);
+	const bool seenI = parser.GetFloatParam('I', tempKi);
+	const bool seenD = parser.GetFloatParam('D', tempKd);
+	const bool seenKiStandstill = parser.GetFloatParam('s', tempKiStandstill);
+	const bool seenKdStandstill = parser.GetFloatParam('t', tempKdStandstill);
+	const bool seenF = parser.GetFloatParam('F', tempKf);
+	const bool seenPid = parser.GetFloatParam('R', tempKp) | seenI | seenD
+						| parser.GetFloatParam('V', tempKv) | parser.GetFloatParam('A', tempKa)
+						| seenKiStandstill | seenKdStandstill | seenF;
 	const bool seenE = parser.GetFloatArrayParam('E', numThresholds, tempErrorThresholds);
 	const bool seenS = parser.GetUintParam('S', tempStepsPerRev);
 	const bool seenQ = parser.GetFloatParam('Q', tempTorquePerAmp);
@@ -215,8 +227,18 @@ GCodeResult ClosedLoop::ProcessM569Point1(CanMessageGenericParser& parser, const
 		{
 			reply.catf("Encoder type: %s", GetEncoderType().ToString());
 			encoder->AppendStatus(reply);
-			reply.lcatf("PID parameters P=%.1f I=%.3f D=%.3f V=%.1f A=%.1f, torque constant %.2fNm/A",
-						(double)Kp, (double)Ki, (double)Kd, (double)Kv, (double)Ka, (double)torquePerAmp);
+			reply.lcatf("PID parameters P=%.1f I=%.3f", (double)Kp, (double)Ki);
+			if (splitIntegral)
+			{
+				reply.catf(":%.3f", (double)KiStandstill);
+			}
+			reply.catf(" D=%.3f", (double)Kd);
+			if (velocityDerivative)
+			{
+				reply.catf(":%.3f", (double)KdStandstill);
+			}
+			reply.catf(" F=%.1f V=%.1f A=%.1f, torque constant %.2fNm/A",
+						(double)Kf, (double)Kv, (double)Ka, (double)torquePerAmp);
 			reply.lcatf("Warning/error threshold %.2f/%.2f, standstill deadband %.3f%s", (double)errorThresholds[0], (double)errorThresholds[1], (double)GetEffectiveDeadband(), (deadband < 0.0) ? " (auto)" : "");
 		}
 		return GCodeResult::ok;
@@ -255,6 +277,18 @@ GCodeResult ClosedLoop::ProcessM569Point1(CanMessageGenericParser& parser, const
 		reply.copy("Torque per amp must be positive");
 		return GCodeResult::error;
 	}
+	if ((seenKiStandstill && (!isfinite(tempKi) || !isfinite(tempKiStandstill) || tempKi < 0.0 || tempKiStandstill < 0.0))
+		|| (seenKdStandstill && (!isfinite(tempKd) || !isfinite(tempKdStandstill) || tempKd < 0.0 || tempKdStandstill < 0.0))
+		|| (seenF && (!isfinite(tempKf) || tempKf < 0.0 || tempKf > 256.0)))
+	{
+		reply.copy("Invalid closed loop controller gain");
+		return GCodeResult::error;
+	}
+	if ((!seenI && seenKiStandstill) || (!seenD && seenKdStandstill))
+	{
+		reply.copy("Incomplete closed loop controller gain pair");
+		return GCodeResult::error;
+	}
 
 	if (seenT)
 	{
@@ -268,11 +302,17 @@ GCodeResult ClosedLoop::ProcessM569Point1(CanMessageGenericParser& parser, const
 		if (seenPid)
 		{
 			Kp = tempKp;
-			Ki = tempKi;
-			Kd = tempKd;
+			ControllerGainPair::Apply(seenI, seenKiStandstill, tempKi, tempKiStandstill,
+				Ki, KiStandstill, splitIntegral);
+			ControllerGainPair::Apply(seenD, seenKdStandstill, tempKd, tempKdStandstill,
+				Kd, KdStandstill, velocityDerivative);
+			Kf = tempKf;
 			Kv = tempKv;
 			Ka = tempKa;
 			PIDITerm = 0.0;
+			integralError = 0.0;
+			moveStandstillTransition.Reset();
+			frictionFeedforward.Reset();
 			errorDerivativeFilter.Reset();
 			speedFilter.Reset();
 		}
@@ -584,6 +624,9 @@ GCodeResult ClosedLoop::ProcessBasicTuningResult(const StringRef& reply) noexcep
 	}
 
 	PIDITerm = 0.0;
+	integralError = 0.0;
+	moveStandstillTransition.Reset();
+	frictionFeedforward.Reset();
 	errorDerivativeFilter.Reset();
 	speedFilter.Reset();
 	SetTargetToCurrentPosition();
@@ -679,6 +722,9 @@ GCodeResult ClosedLoop::ProcessCalibrationResult(const StringRef& reply) noexcep
 	}
 
 	PIDITerm = 0.0;
+	integralError = 0.0;
+	moveStandstillTransition.Reset();
+	frictionFeedforward.Reset();
 	errorDerivativeFilter.Reset();
 	speedFilter.Reset();
 	SetTargetToCurrentPosition();
@@ -757,6 +803,7 @@ void ClosedLoop::AdjustTargetMotorSteps(float amount) noexcept
 
 void ClosedLoop::InstanceControlLoop(StepTimer::Ticks now, StepTimer::Ticks timeElapsed) noexcept
 {
+	PIDFTerm = 0.0f;
 	// Read the current state of the drive. Do this even if we are not in closed loop mode.
 	if (encoder != nullptr && encoder->TakeReading())
 	{
@@ -874,6 +921,12 @@ void ClosedLoop::InstanceControlLoop(StepTimer::Ticks now, StepTimer::Ticks time
 			}
 		}
 
+		if (currentMode == ClosedLoopMode::open || inTorqueMode || tuning != 0 || tuningError != 0)
+		{
+			moveStandstillTransition.Reset();
+			frictionFeedforward.Reset();
+		}
+
 		// Collect a sample, if we need to
 		if (samplingMode == RecordingMode::Immediate && (int32_t)(now - whenNextSampleDue) >= 0)
 		{
@@ -988,6 +1041,7 @@ void ClosedLoop::CollectSample() noexcept
 		if (filterRequested & CL_RECORD_PHASE_SHIFT)  			{ sampleBuffer.PutU16(0); }
 		if (filterRequested & CL_RECORD_COIL_A_CURRENT) 		{ sampleBuffer.PutI16(coilA); }
 		if (filterRequested & CL_RECORD_COIL_B_CURRENT) 		{ sampleBuffer.PutI16(coilB); }
+		if (filterRequested & CL_RECORD_PID_F_TERM) 			{ sampleBuffer.PutF16(PIDFTerm); }
 
 		sampleBuffer.FinishSample();
 		++samplesCollected;
@@ -1063,15 +1117,39 @@ inline float ClosedLoop::ControlMotorCurrents(StepTimer::Ticks ticksSinceLastCal
 		// Use a PID controller to calculate the required 'torque' - the control signal
 		// We choose to use a PID control signal in the range -256 to +256. This is arbitrary.
 		PIDPTerm = constrain<float>(Kp * currentPositionError, -256.0, 256.0);
-		PIDDTerm = constrain<float>(Kd * errorDerivativeFilter.GetDerivative() * StepTimer::StepClockRate, -256.0, 256.0);	// constrain D so that we can graph it more sensibly after a sudden step input
+		const float moveStandstillBlend = (splitIntegral || velocityDerivative)
+			? moveStandstillTransition.Update(mParams.speed, mParams.acceleration, SpeedFilterSize)
+			: 0.0f;
+		if (velocityDerivative)
+		{
+			const float effectiveKd = KdStandstill + moveStandstillBlend * (Kd - KdStandstill);
+			PIDDTerm = constrain<float>(effectiveKd * (mParams.speed - speedFilter.GetDerivative())
+				* StepTimer::StepClockRate, -256.0, 256.0);
+		}
+		else
+		{
+			// Preserve the original scalar-D calculation exactly.
+			PIDDTerm = constrain<float>(Kd * errorDerivativeFilter.GetDerivative() * StepTimer::StepClockRate, -256.0, 256.0);
+		}
+		PIDFTerm = frictionFeedforward.Update(mParams.speed, Kf, SpeedFilterSize);
 
 		if (currentMode == ClosedLoopMode::closed)
 		{
 			const float timeDelta = (float)ticksSinceLastCall * (1.0/(float)StepTimer::StepClockRate);						// get the time delta in seconds
-			PIDITerm = constrain<float>(PIDITerm + Ki * currentPositionError * timeDelta, -PIDIlimit, PIDIlimit);			// constrain I to prevent it running away
+			if (!splitIntegral)
+			{
+				// Preserve the original scalar-I update exactly.
+				PIDITerm = constrain<float>(PIDITerm + Ki * currentPositionError * timeDelta, -PIDIlimit, PIDIlimit);
+			}
 			PIDVTerm = mParams.speed * Kv * ticksSinceLastCall;
 			PIDATerm = mParams.acceleration * Ka * fsquare(ticksSinceLastCall);
-			PIDControlSignal = constrain<float>(PIDPTerm + PIDITerm + PIDDTerm + PIDVTerm + PIDATerm, -256.0, 256.0);		// clamp the sum between +/- 256
+			if (splitIntegral)
+			{
+				const float effectiveKi = KiStandstill + moveStandstillBlend * (Ki - KiStandstill);
+				PIDITerm = SplitIntegral::Update(integralError, effectiveKi, currentPositionError, timeDelta,
+					PIDPTerm + PIDDTerm + PIDFTerm + PIDVTerm + PIDATerm, PIDIlimit);
+			}
+			PIDControlSignal = constrain<float>(PIDPTerm + PIDITerm + PIDDTerm + PIDFTerm + PIDVTerm + PIDATerm, -256.0, 256.0);
 
 			// Calculate the offset required to produce the torque in the correct direction
 			// i.e. if we are moving in the positive direction, we must apply currents with a positive phase shift
@@ -1093,9 +1171,11 @@ inline float ClosedLoop::ControlMotorCurrents(StepTimer::Ticks ticksSinceLastCal
 			// Driver is in assisted open loop mode
 			// In this mode the I term is not used and the A and V terms are independent of the loop time.
 			constexpr float scalingFactor = 100.0;
+			PIDITerm = 0.0f;
 			PIDVTerm = mParams.speed * Kv * scalingFactor;
 			PIDATerm = mParams.acceleration * Ka * fsquare(scalingFactor);
-			PIDControlSignal = min<float>(fabsf(PIDPTerm + PIDDTerm) + fabsf(PIDVTerm) + fabsf(PIDATerm), 256.0);
+			PIDControlSignal = min<float>(fabsf(PIDPTerm + PIDDTerm) + fabsf(PIDFTerm)
+				+ fabsf(PIDVTerm) + fabsf(PIDATerm), 256.0);
 
 			const uint16_t stepPhase = (uint16_t)llrintf(mParams.position * 1024.0);		// we use llrintf so that we can guarantee to convert the float operand to integer. We only care about the lowest 12 bits.
 			commandedStepPhase = (stepPhase + phaseOffset) % 4096u;
@@ -1174,6 +1254,13 @@ void ClosedLoop::ResetError() noexcept
 		// Set the target position to the current position
 		const bool ok = encoder->TakeReading();
 		(void)ok;		//TODO handle error
+		if (splitIntegral)
+		{
+			PIDITerm = 0.0f;
+			integralError = 0.0f;
+		}
+		moveStandstillTransition.Reset();
+		frictionFeedforward.Reset();
 		errorDerivativeFilter.Reset();
 		speedFilter.Reset();
 		SetTargetToCurrentPosition();
@@ -1220,6 +1307,9 @@ bool ClosedLoop::SetClosedLoopEnabled(ClosedLoopMode mode, const StringRef &repl
 		}
 
 		PIDITerm = 0.0;
+		integralError = 0.0;
+		moveStandstillTransition.Reset();
+		frictionFeedforward.Reset();
 		errorDerivativeFilter.Reset();
 		speedFilter.Reset();
 		SetTargetToCurrentPosition();
@@ -1252,6 +1342,9 @@ void ClosedLoop::DriverSwitchedToClosedLoop() noexcept
 	desiredStepPhase = currentPhasePosition;
 	SetMotorPhase(currentPhasePosition, SmartDrivers::GetStandstillCurrentPercent(driverNumber) * 0.01);	// set the motor currents to match the initial position using the open loop standstill current
 	PIDITerm = 0.0;													// clear the integral term accumulator
+	integralError = 0.0;
+	moveStandstillTransition.Reset();
+	frictionFeedforward.Reset();
 	errorDerivativeFilter.Reset();
 	speedFilter.Reset();
 	moveInstance->ResetPhaseStepMonitoringVariables();				// the first loop iteration will have recorded a higher than normal loop call interval, so start again
@@ -1331,6 +1424,13 @@ void ClosedLoop::GetStatistics(ClosedLoopStatus& stat) noexcept
 // When not called from the closed loop/TMC task, task scheduling should be disabled before calling this.
 void ClosedLoop::ExitTorqueMode() noexcept
 {
+	if (splitIntegral)
+	{
+		PIDITerm = 0.0f;
+		integralError = 0.0f;
+	}
+	moveStandstillTransition.Reset();
+	frictionFeedforward.Reset();
 	errorDerivativeFilter.Reset();
 	speedFilter.Reset();
 	SetTargetToCurrentPosition();
