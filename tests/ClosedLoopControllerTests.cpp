@@ -9,7 +9,8 @@
 
 namespace
 {
-	constexpr unsigned int TransitionUpdates = 8;
+	constexpr unsigned int MoveStandstillTransitionUpdates = 24;
+	constexpr unsigned int FrictionTransitionUpdates = 8;
 
 	bool Near(float a, float b, float tolerance = 1.0e-5f)
 	{
@@ -19,13 +20,13 @@ namespace
 	void TestMoveStandstillTransition()
 	{
 		MoveStandstillTransition transition;
-		assert(transition.Update(0.0f, 0.0f, TransitionUpdates) == 0.0f);
+		assert(transition.Update(0.0f, 0.0f, MoveStandstillTransitionUpdates) == 0.0f);
 
 		float previous = 0.0f;
-		for (unsigned int update = 1; update <= TransitionUpdates; ++update)
+		for (unsigned int update = 1; update <= MoveStandstillTransitionUpdates; ++update)
 		{
-			const float blend = transition.Update(0.01f * (float)update, 1.0e-5f, TransitionUpdates);
-			assert(Near(blend, MotionTransition::SmoothStep((float)update/(float)TransitionUpdates)));
+			const float blend = transition.Update(0.01f * (float)update, 1.0e-5f, MoveStandstillTransitionUpdates);
+			assert(Near(blend, MotionTransition::SmoothStep((float)update/(float)MoveStandstillTransitionUpdates)));
 			assert(blend >= previous);
 			previous = blend;
 		}
@@ -33,18 +34,18 @@ namespace
 
 		// Acceleration, cruise, non-zero junction deceleration, small non-zero
 		// velocity and acceleration away from a junction all remain MOVE.
-		assert(transition.Update(0.05f, 1.0e-5f, TransitionUpdates) == 1.0f);
-		assert(transition.Update(0.05f, 0.0f, TransitionUpdates) == 1.0f);
-		assert(transition.Update(0.01f, -1.0e-5f, TransitionUpdates) == 1.0f);
-		assert(transition.Update(0.01f, 0.0f, TransitionUpdates) == 1.0f);
-		assert(transition.Update(0.05f, 1.0e-5f, TransitionUpdates) == 1.0f);
-		assert(transition.Update(0.0f, -1.0e-5f, TransitionUpdates) == 1.0f);
+		assert(transition.Update(0.05f, 1.0e-5f, MoveStandstillTransitionUpdates) == 1.0f);
+		assert(transition.Update(0.05f, 0.0f, MoveStandstillTransitionUpdates) == 1.0f);
+		assert(transition.Update(0.01f, -1.0e-5f, MoveStandstillTransitionUpdates) == 1.0f);
+		assert(transition.Update(0.01f, 0.0f, MoveStandstillTransitionUpdates) == 1.0f);
+		assert(transition.Update(0.05f, 1.0e-5f, MoveStandstillTransitionUpdates) == 1.0f);
+		assert(transition.Update(0.0f, -1.0e-5f, MoveStandstillTransitionUpdates) == 1.0f);
 
 		previous = 1.0f;
-		for (unsigned int remaining = TransitionUpdates - 1; ; --remaining)
+		for (unsigned int remaining = MoveStandstillTransitionUpdates - 1; ; --remaining)
 		{
-			const float blend = transition.Update(0.0f, 0.0f, TransitionUpdates);
-			assert(Near(blend, MotionTransition::SmoothStep((float)remaining/(float)TransitionUpdates)));
+			const float blend = transition.Update(0.0f, 0.0f, MoveStandstillTransitionUpdates);
+			assert(Near(blend, MotionTransition::SmoothStep((float)remaining/(float)MoveStandstillTransitionUpdates)));
 			assert(blend <= previous);
 			previous = blend;
 			if (remaining == 0) { break; }
@@ -53,49 +54,49 @@ namespace
 
 		// No encoder measurement is accepted by the state machine, so encoder
 		// noise cannot alter the standstill state.
-		assert(transition.Update(0.0f, 0.0f, TransitionUpdates) == 0.0f);
+		assert(transition.Update(0.0f, 0.0f, MoveStandstillTransitionUpdates) == 0.0f);
 	}
 
 	void TestFrictionFeedforward()
 	{
 		FrictionFeedforward friction;
-		assert(friction.Update(0.0f, 72.0f, TransitionUpdates) == 0.0f);
+		assert(friction.Update(0.0f, 72.0f, FrictionTransitionUpdates) == 0.0f);
 		float previous = 0.0f;
-		for (unsigned int update = 1; update <= TransitionUpdates; ++update)
+		for (unsigned int update = 1; update <= FrictionTransitionUpdates; ++update)
 		{
-			const float value = friction.Update(0.01f, 72.0f, TransitionUpdates);
-			assert(Near(value, 72.0f * MotionTransition::SmoothStep((float)update/(float)TransitionUpdates)));
+			const float value = friction.Update(0.01f, 72.0f, FrictionTransitionUpdates);
+			assert(Near(value, 72.0f * MotionTransition::SmoothStep((float)update/(float)FrictionTransitionUpdates)));
 			assert(value >= previous);
 			previous = value;
 		}
 		assert(Near(previous, 72.0f));
 
 		// A 50 -> 10 mm/s junction remains non-zero commanded motion.
-		assert(Near(friction.Update(0.05f, 72.0f, TransitionUpdates), 72.0f));
-		assert(Near(friction.Update(0.01f, 72.0f, TransitionUpdates), 72.0f));
+		assert(Near(friction.Update(0.05f, 72.0f, FrictionTransitionUpdates), 72.0f));
+		assert(Near(friction.Update(0.01f, 72.0f, FrictionTransitionUpdates), 72.0f));
 
-		for (unsigned int remaining = TransitionUpdates - 1; ; --remaining)
+		for (unsigned int remaining = FrictionTransitionUpdates - 1; ; --remaining)
 		{
-			const float value = friction.Update(0.0f, 72.0f, TransitionUpdates);
-			assert(Near(value, 72.0f * MotionTransition::SmoothStep((float)remaining/(float)TransitionUpdates)));
+			const float value = friction.Update(0.0f, 72.0f, FrictionTransitionUpdates);
+			assert(Near(value, 72.0f * MotionTransition::SmoothStep((float)remaining/(float)FrictionTransitionUpdates)));
 			if (remaining == 0) { break; }
 		}
-		assert(friction.Update(0.0f, 72.0f, TransitionUpdates) == 0.0f);
+		assert(friction.Update(0.0f, 72.0f, FrictionTransitionUpdates) == 0.0f);
 
 		// An abnormal direct sign reversal must cross zero before becoming negative.
 		friction.Reset();
-		for (unsigned int i = 0; i < TransitionUpdates; ++i)
+		for (unsigned int i = 0; i < FrictionTransitionUpdates; ++i)
 		{
-			(void)friction.Update(1.0f, 72.0f, TransitionUpdates);
+			(void)friction.Update(1.0f, 72.0f, FrictionTransitionUpdates);
 		}
-		for (unsigned int i = 0; i < TransitionUpdates; ++i)
+		for (unsigned int i = 0; i < FrictionTransitionUpdates; ++i)
 		{
-			assert(friction.Update(-1.0f, 72.0f, TransitionUpdates) >= 0.0f);
+			assert(friction.Update(-1.0f, 72.0f, FrictionTransitionUpdates) >= 0.0f);
 		}
-		assert(friction.Update(-1.0f, 72.0f, TransitionUpdates) < 0.0f);
+		assert(friction.Update(-1.0f, 72.0f, FrictionTransitionUpdates) < 0.0f);
 
-		assert(friction.Update(1.0f, 0.0f, TransitionUpdates) == 0.0f);
-		assert(friction.Update(-1.0f, 0.0f, TransitionUpdates) == 0.0f);
+		assert(friction.Update(1.0f, 0.0f, FrictionTransitionUpdates) == 0.0f);
+		assert(friction.Update(-1.0f, 0.0f, FrictionTransitionUpdates) == 0.0f);
 	}
 
 	void TestSplitIntegral()
@@ -109,9 +110,9 @@ namespace
 		// movement updates instead of freezing the standstill output.
 		MoveStandstillTransition transition;
 		float previous = term;
-		for (unsigned int update = 1; update <= TransitionUpdates; ++update)
+		for (unsigned int update = 1; update <= MoveStandstillTransitionUpdates; ++update)
 		{
-			const float blend = transition.Update(1.0f, 0.0f, TransitionUpdates);
+			const float blend = transition.Update(1.0f, 0.0f, MoveStandstillTransitionUpdates);
 			const float gain = 5.0f * (1.0f - blend);
 			term = SplitIntegral::Update(integralError, gain, 0.0f, 0.1f, 0.0f, 80.0f);
 			assert(term <= previous);

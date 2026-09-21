@@ -99,6 +99,7 @@ private:
 	// Constants private to this module
 	static constexpr unsigned int DerivativeFilterSize = 8;			// The range of the error derivative filter (use a power of 2 for efficiency)
 	static constexpr unsigned int SpeedFilterSize = 8;				// The range of the speed filter (use a power of 2 for efficiency)
+	static constexpr unsigned int MoveStandstillTransitionUpdates = 24;	// Split-I and velocity-D transition horizon
 	static constexpr unsigned int tuningStepsPerSecond = 2000;		// the rate at which we send 1/256 microsteps during tuning, slow enough for high-inertia motors
 	static constexpr StepTimer::Ticks stepTicksPerTuningStep = StepTimer::StepClockRate/tuningStepsPerSecond;
 	static constexpr StepTimer::Ticks stepTicksBeforeTuning = StepTimer::StepClockRate/10;

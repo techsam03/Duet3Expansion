@@ -1118,7 +1118,7 @@ inline float ClosedLoop::ControlMotorCurrents(StepTimer::Ticks ticksSinceLastCal
 		// We choose to use a PID control signal in the range -256 to +256. This is arbitrary.
 		PIDPTerm = constrain<float>(Kp * currentPositionError, -256.0, 256.0);
 		const float moveStandstillBlend = (splitIntegral || velocityDerivative)
-			? moveStandstillTransition.Update(mParams.speed, mParams.acceleration, SpeedFilterSize)
+			? moveStandstillTransition.Update(mParams.speed, mParams.acceleration, MoveStandstillTransitionUpdates)
 			: 0.0f;
 		if (velocityDerivative)
 		{
