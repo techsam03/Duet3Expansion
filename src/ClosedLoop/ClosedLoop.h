@@ -20,6 +20,8 @@
 # include "DerivativeAveragingFilter.h"
 # include "TuningErrors.h"
 # include "SampleBuffer.h"
+# include "MotionTransition.h"
+# include "SplitIntegral.h"
 # include "Encoders/Encoder.h"
 # include <Movement/PhaseStep.h>
 
@@ -140,10 +142,15 @@ private:
 	float 	holdCurrentFraction = DefaultHoldCurrentFraction;	// The minimum holding current when stationary
 	float	torquePerAmp = DefaultTorquePerAmp;					// the torque per amp of configured current
 	float 	Kp = 30.0;											// The proportional constant for the PID controller
-	float 	Ki = 0.0;											// The proportional constant for the PID controller
-	float 	Kd = 0.0;											// The proportional constant for the PID controller
+	float 	Ki = 0.0;											// Moving integral gain, or the legacy scalar integral gain
+	float 	Kd = 0.0;											// Moving derivative gain, or the legacy scalar derivative gain
+	float	KiStandstill = 0.0;								// Standstill I gain when split I is enabled
+	float	KdStandstill = 0.0;								// Standstill D gain when velocity D is enabled
+	float	Kf = 0.0;										// Coulomb friction feedforward
 	float	Kv = 1000.0;										// The velocity feedforward constant
 	float	Ka = 0.0;											// The acceleration feedforward constant
+	bool	splitIntegral = false;
+	bool	velocityDerivative = false;
 	float	deadband = -1.0;									// The position error deadband applied when no movement is commanded, in full steps. Negative = automatic (one encoder count), zero disables it
 
 	// Return the deadband that is actually applied, resolving automatic mode to the encoder count spacing
@@ -165,11 +172,14 @@ private:
 	unsigned int periodNumSamples = 0;					// how many samples are in sumOfPositionErrorSquares
 
 	float 	PIDPTerm;									// Proportional term
-	float 	PIDITerm = 0.0;								// Integral accumulator
+	float 	PIDITerm = 0.0;								// Integral accumulator in legacy mode, current I contribution in split mode
 	float 	PIDDTerm;									// Derivative term
+	float	PIDFTerm = 0.0;								// Friction feedforward term
 	float	PIDVTerm;									// Velocity feedforward term
 	float	PIDATerm;									// Acceleration feedforward term
 	float	PIDControlSignal;							// The overall signal from the PID controller
+	float	integralError = 0.0;							// Shared integral state used by split-I mode
+	FrictionFeedforward frictionFeedforward;
 
 
 	uint16_t desiredStepPhase = 0;						// The desired position of the motor
